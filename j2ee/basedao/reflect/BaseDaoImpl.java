@@ -1,5 +1,7 @@
+package com.cnc.roas.base;
 
 import java.lang.annotation.Annotation;
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
@@ -12,6 +14,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.cnc.roas.annotation.ColumnName;
+import com.cnc.roas.annotation.TableName;
+import com.cnc.roas.sparkjob.confmeta.entity.ConfMetaDataEntity;
+import com.cnc.roas.utils.DBUtil;
+import com.sun.jndi.cosnaming.CNCtx;
+import com.sun.org.apache.bcel.internal.generic.NEW;
 
 public class BaseDaoImpl<T> implements BaseDao<T>{
 
@@ -111,7 +119,10 @@ public class BaseDaoImpl<T> implements BaseDao<T>{
 	}
 
 	@Override
-	public int deleteDatas(T t, long[] ids) {
+	public int deleteDatas(String[] ids) {
+		if(0==ids.length || null == ids){
+			return 0;
+		}
 		Connection con = null;
 		PreparedStatement pre =  null;
 		int isFinish = 0;
@@ -125,7 +136,7 @@ public class BaseDaoImpl<T> implements BaseDao<T>{
 			con =DBUtil.openConnection();
 			for(int i=0;i<ids.length;i++){
 				pre = con.prepareStatement(sql);
-				pre.setLong(1, ids[i]);
+				pre.setString(1, ids[i]);
 				pre.addBatch();
 			}
 			pre.executeBatch();
@@ -182,16 +193,21 @@ public class BaseDaoImpl<T> implements BaseDao<T>{
 				for(Method method : methods){
 					if(method.isAnnotationPresent(ColumnName.class)){
 						ColumnName columnName = method.getAnnotation(ColumnName.class);
-						Object object = resultSet.getObject(columnName.columnName());
+						String str = resultSet.getString(columnName.columnName());//以string的形式获取数据
+						if(null==str){
+							str = "";
+						}
 						String getName= method.getName();
 						String setName = "set"+getName.substring(3,getName.length());
 						Method setMethod = clz.getDeclaredMethod(setName,method.getReturnType());
-						setMethod.invoke(newT, object);
+						Constructor cons = method.getReturnType().getConstructor(String.class);//构造类似 xxx(String)的构造函数 ,xx由get的返回类型决定
+						Object setObject = cons.newInstance(str);
+						setMethod.invoke(newT,setObject);
 					}
 				}
 				list.add(newT);
 			}
-			map.put("data", list);
+			map.put("rows", list);
 			map.put("total", list.size());
 		} catch (Exception e) {
 			e.printStackTrace();
@@ -209,10 +225,58 @@ public class BaseDaoImpl<T> implements BaseDao<T>{
 	}
 	
 	
+	@Override
+	public Integer getDataEntitiesCount(T t) {
+		Integer total = 0;
+		Connection con = null ;
+		PreparedStatement pre = null;
+		ResultSet resultSet = null;
+		
+		try {
+			con = DBUtil.openConnection();
+			Type genType = getClass().getGenericSuperclass();  
+	        Type[] params = ((ParameterizedType) genType).getActualTypeArguments();  
+			Class clz = (Class) params[0];  
+			TableName annotation = (TableName) clz.getAnnotation(TableName.class);
+			String tablename = annotation.tablename();
+			String sql = "select count(id) from "+tablename+" where "; 
+			Method[] methods = clz.getDeclaredMethods();
+			if(null!=t){
+				for(Method method : methods){
+					if(method.isAnnotationPresent(ColumnName.class)){
+						if("get".equals(method.getName().subSequence(0, 3))){
+							ColumnName columnName = method.getAnnotation(ColumnName.class);
+							if(null!=method.invoke(t)){
+								sql += columnName.columnName() + " like '%" + method.invoke(t)+ "%' and ";
+							}
+						}
+					}
+				}
+			}
+			sql+=" 1=1";
+			System.out.println(sql);
+			pre = con.prepareStatement(sql);
+			resultSet = pre.executeQuery();
+			while(resultSet.next()){
+				total = resultSet.getInt(1);
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+			
+		}finally{
+			try {
+				resultSet.close();
+				pre.close();
+				con.close();
+			} catch (SQLException e) {
+				e.printStackTrace();
+			}
+		}
+		return total;
+	}
 	
 	@Override
-	public Map<String, Object> getDataEntities(T t,int start,int pagesize) {
-		Map<String, Object> map = new  HashMap<String, Object>();
+	public List<T> getDataEntities(T t,int start,int pagesize) {
 		List<T> list = new ArrayList<T>();
 		Connection con = null ;
 		PreparedStatement pre = null;
@@ -249,17 +313,20 @@ public class BaseDaoImpl<T> implements BaseDao<T>{
 				for(Method method : methods){
 					if(method.isAnnotationPresent(ColumnName.class)){
 						ColumnName columnName = method.getAnnotation(ColumnName.class);
-						Object object = resultSet.getObject(columnName.columnName());
+						String str = resultSet.getString(columnName.columnName());
+						if(null==str){
+							str = "";
+						}
 						String getName= method.getName();
 						String setName = "set"+getName.substring(3,getName.length());
 						Method setMethod = clz.getDeclaredMethod(setName,method.getReturnType());
-						setMethod.invoke(newT, object);
+						Constructor cons = method.getReturnType().getConstructor(String.class);
+						Object setObject = cons.newInstance(str);
+						setMethod.invoke(newT,setObject);
 					}
 				}
 				list.add(newT);
 			}
-			map.put("data", list);
-			map.put("total", list.size());
 		} catch (Exception e) {
 			e.printStackTrace();
 			
@@ -272,7 +339,60 @@ public class BaseDaoImpl<T> implements BaseDao<T>{
 				e.printStackTrace();
 			}
 		}
-		return map;
+		return list;
+	}
+
+
+	@Override
+	public Object getData(Integer id) {
+		Connection con = null ;
+		PreparedStatement pre = null;
+		ResultSet resultSet = null ;
+		Object result = null;
+		try {
+			con = DBUtil.openConnection();
+			Type genType = getClass().getGenericSuperclass();  
+	        Type[] params = ((ParameterizedType) genType).getActualTypeArguments();  
+			Class clz = (Class) params[0];  
+			TableName annotation = (TableName) clz.getAnnotation(TableName.class);
+			String tablename = annotation.tablename();
+			String sql = "select * from "+tablename+" where id="+id; 
+			Method[] methods = clz.getDeclaredMethods();
+			System.out.println(sql);
+			pre = con.prepareStatement(sql);
+			resultSet  = pre.executeQuery();
+			while(resultSet.next()){
+				T newT = (T) clz.newInstance();
+				for(Method method : methods){
+					if(method.isAnnotationPresent(ColumnName.class)){
+						ColumnName columnName = method.getAnnotation(ColumnName.class);
+						String str = resultSet.getString(columnName.columnName());
+						if(null==str){
+							str = "";
+						}
+						String getName= method.getName();
+						String setName = "set"+getName.substring(3,getName.length());
+						Method setMethod = clz.getDeclaredMethod(setName,method.getReturnType());
+						Constructor cons = method.getReturnType().getConstructor(String.class);
+						Object setObject = cons.newInstance(str);
+						setMethod.invoke(newT,setObject);
+					}
+				}
+				result = newT;
+			}
+		} catch (Exception e) {
+			e.printStackTrace();
+			
+		}finally{
+			try {
+				resultSet.close();
+				pre.close();
+				con.close();
+			} catch (SQLException e) {
+				e.printStackTrace();
+			}
+		}
+		return result;
 	}
 
 }
